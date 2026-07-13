@@ -1,13 +1,13 @@
 """
-Seattle Hotel Agent - A simple agent with a tool to find hotels in Seattle.
-Uses Microsoft Agent Framework with Azure AI Foundry.
+Weather Agent - Given a city, outputs the current temperature and the forecast for the next week.
+Uses Microsoft Agent Framework with Azure AI Foundry and Open-Meteo API.
 Ready for deployment to Foundry Hosted Agent service.
 """
 
 import os
-from datetime import datetime
 from typing import Annotated
 
+import httpx
 from agent_framework import Agent, tool
 from agent_framework.foundry import FoundryChatClient
 from agent_framework_foundry_hosting import ResponsesHostServer
@@ -16,7 +16,6 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
-# Configure these for your Foundry project via environment variables (see .env.sample)
 PROJECT_ENDPOINT = os.getenv("FOUNDRY_PROJECT_ENDPOINT")
 MODEL_DEPLOYMENT_NAME = os.getenv("AZURE_AI_MODEL_DEPLOYMENT_NAME")
 
@@ -26,61 +25,95 @@ if not PROJECT_ENDPOINT:
         "Copy .env.sample to .env and fill in your Azure AI Foundry project endpoint."
     )
 
-# Simulated hotel data for Seattle
-SEATTLE_HOTELS = [
-    {"name": "Contoso Suites", "price_per_night": 189, "rating": 4.5, "location": "Downtown"},
-    {"name": "Fabrikam Residences", "price_per_night": 159, "rating": 4.2, "location": "Pike Place Market"},
-    {"name": "Alpine Ski House", "price_per_night": 249, "rating": 4.7, "location": "Seattle Center"},
-    {"name": "Margie's Travel Lodge", "price_per_night": 219, "rating": 4.4, "location": "Waterfront"},
-    {"name": "Northwind Inn", "price_per_night": 139, "rating": 4.0, "location": "Capitol Hill"},
-    {"name": "Relecloud Hotel", "price_per_night": 99, "rating": 3.8, "location": "University District"},
-]
+GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
+FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+
+
+def _geocode_city(city: str) -> dict | None:
+    try:
+        response = httpx.get(GEOCODING_URL, params={"name": city, "count": 1}, timeout=10)
+        response.raise_for_status()
+        results = response.json().get("results")
+        if not results:
+            return None
+        return results[0]
+    except Exception:
+        return None
 
 
 @tool
-def get_available_hotels(
-        check_in_date: Annotated[str, "Check-in date in YYYY-MM-DD format"],
-        check_out_date: Annotated[str, "Check-out date in YYYY-MM-DD format"],
-        max_price: Annotated[int, "Maximum price per night in USD (optional)"] = 500,
+def get_current_temperature(
+    city: Annotated[str, "Name of the city to get the current temperature for"],
 ) -> str:
     """
-    Get available hotels in Seattle for the specified dates.
-    This simulates a call to a fake hotel availability API.
+    Get the current temperature in the specified city.
+    Returns the temperature in Celsius along with basic location info.
     """
+    geo = _geocode_city(city)
+    if not geo:
+        return f"Error: Could not find the city '{city}'. Please check the spelling and try again."
+
     try:
-        # Parse dates
-        check_in = datetime.strptime(check_in_date, "%Y-%m-%d")
-        check_out = datetime.strptime(check_out_date, "%Y-%m-%d")
+        response = httpx.get(
+            FORECAST_URL,
+            params={
+                "latitude": geo["latitude"],
+                "longitude": geo["longitude"],
+                "current": "temperature_2m",
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+        data = response.json()
+        current = data["current"]
+        temp = current["temperature_2m"]
+        unit = data["current_units"]["temperature_2m"]
+        location_name = geo.get("name", city)
+        country = geo.get("country", "")
+        return f"Current temperature in {location_name}, {country}: {temp}°{unit}"
+    except Exception as e:
+        return f"Error fetching current temperature for '{city}': {e}"
 
-        # Validate dates
-        if check_out <= check_in:
-            return "Error: Check-out date must be after check-in date."
 
-        nights = (check_out - check_in).days
+@tool
+def get_weekly_temperature_forecast(
+    city: Annotated[str, "Name of the city to get the weekly temperature forecast for"],
+) -> str:
+    """
+    Get the temperature forecast for the next 7 days in the specified city.
+    Returns daily minimum and maximum temperatures in Celsius.
+    """
+    geo = _geocode_city(city)
+    if not geo:
+        return f"Error: Could not find the city '{city}'. Please check the spelling and try again."
 
-        # Filter hotels by price
-        available_hotels = [
-            hotel for hotel in SEATTLE_HOTELS
-            if hotel["price_per_night"] <= max_price
-        ]
+    try:
+        response = httpx.get(
+            FORECAST_URL,
+            params={
+                "latitude": geo["latitude"],
+                "longitude": geo["longitude"],
+                "daily": "temperature_2m_max,temperature_2m_min",
+                "forecast_days": 7,
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+        data = response.json()
+        daily = data["daily"]
+        dates = daily["time"]
+        max_temps = daily["temperature_2m_max"]
+        min_temps = daily["temperature_2m_min"]
+        unit = data["daily_units"]["temperature_2m_max"]
+        location_name = geo.get("name", city)
+        country = geo.get("country", "")
 
-        if not available_hotels:
-            return f"No hotels found in Seattle within your budget of ${max_price}/night."
-
-        # Build response
-        result = f"Available hotels in Seattle from {check_in_date} to {check_out_date} ({nights} nights):\n\n"
-
-        for hotel in available_hotels:
-            total_cost = hotel["price_per_night"] * nights
-            result += f"**{hotel['name']}**\n"
-            result += f"   Location: {hotel['location']}\n"
-            result += f"   Rating: {hotel['rating']}/5\n"
-            result += f"   ${hotel['price_per_night']}/night (Total: ${total_cost})\n\n"
-
+        result = f"7-day temperature forecast for {location_name}, {country}:\n\n"
+        for date, t_max, t_min in zip(dates, max_temps, min_temps):
+            result += f"  {date}: {t_min}°{unit} - {t_max}°{unit}\n"
         return result
-
-    except ValueError as e:
-        return f"Error parsing dates. Please use YYYY-MM-DD format. Details: {str(e)}"
+    except Exception as e:
+        return f"Error fetching weekly forecast for '{city}': {e}"
 
 
 def main():
@@ -94,22 +127,22 @@ def main():
 
     agent = Agent(
         client=client,
-        name="SeattleHotelAgent",
-        instructions="""You are a helpful travel assistant specializing in finding hotels in Seattle, Washington.
+        name="WeatherAgent",
+        instructions="""You are a helpful weather assistant that provides current temperature and weekly forecast information for any city.
 
-When a user asks about hotels in Seattle:
-1. Ask for their check-in and check-out dates if not provided
-2. Ask about their budget preferences if not mentioned
-3. Use the get_available_hotels tool to find available options
-4. Present the results in a friendly, informative way
-5. Offer to help with additional questions about the hotels or Seattle
+When a user asks about the weather or temperature in a city:
+1. Identify the city name from the user's request
+2. Use the get_current_temperature tool to fetch the current temperature
+3. Use the get_weekly_temperature_forecast tool to fetch the 7-day forecast
+4. Present both results in a friendly, clear way
+5. Offer to help with additional questions
 
-Be conversational and helpful. If users ask about things outside of Seattle hotels, 
-politely let them know you specialize in Seattle hotel recommendations.""",
-        tools=[get_available_hotels],
+Be conversational and helpful. If users ask about things unrelated to weather,
+politely let them know you specialize in weather and temperature information.""",
+        tools=[get_current_temperature, get_weekly_temperature_forecast],
     )
 
-    print("Seattle Hotel Agent Server running on http://localhost:8088")
+    print("Weather Agent Server running on http://localhost:8088")
     server = ResponsesHostServer(agent)
     server.run()
 
