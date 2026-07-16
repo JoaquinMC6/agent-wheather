@@ -47,6 +47,45 @@ azd ai agent run
 
 This starts the agent server on `http://localhost:8088`.
 
+## Deploying to Azure
+
+All `azd` commands must be run from the `agents/weather/` directory (where `azure.yaml` is located).
+
+### 1. Login to Azure
+
+```bash
+azd auth login
+```
+
+### 2. Configure environment variables
+
+Set the required variables for the `dev` environment:
+
+```bash
+azd env set AZURE_AI_MODEL_DEPLOYMENT_NAME <your-model-deployment>
+azd env set FOUNDRY_PROJECT_ENDPOINT <your-foundry-endpoint>
+```
+
+### 3. Deploy
+
+```bash
+azd deploy
+```
+
+This builds the Docker image remotely and deploys the agent to Azure AI Foundry.
+
+### 4. Verify
+
+Check the agent endpoint in the Azure AI Foundry portal or use the URL returned by the deploy command.
+
+### 5. Cleanup
+
+To remove all deployed resources:
+
+```bash
+azd down
+```
+
 ## Author
 
 Joaquin Carballo
