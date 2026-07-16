@@ -8,13 +8,17 @@ import os
 from typing import Annotated
 
 import httpx
+from agent_framework.azure import AzureAISearchContextProvider
 from agent_framework import Agent, tool
 from agent_framework.foundry import FoundryChatClient
 from agent_framework_foundry_hosting import ResponsesHostServer
 from azure.identity import DefaultAzureCredential
+from agent_framework.observability import enable_instrumentation
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
+
+enable_instrumentation(enable_sensitive_data=True)
 
 PROJECT_ENDPOINT = os.getenv("FOUNDRY_PROJECT_ENDPOINT")
 MODEL_DEPLOYMENT_NAME = os.getenv("AZURE_AI_MODEL_DEPLOYMENT_NAME")
@@ -75,7 +79,7 @@ def get_current_temperature(
         return f"Error fetching current temperature for '{city}': {e}"
 
 
-@tool
+@tool(approval_mode="never_require")
 def get_weekly_temperature_forecast(
     city: Annotated[str, "Name of the city to get the weekly temperature forecast for"],
 ) -> str:
